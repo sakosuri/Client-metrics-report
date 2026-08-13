@@ -1,0 +1,4 @@
+matplotlib
+openpyxl
+python-dotenv
+requests
