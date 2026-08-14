@@ -54,7 +54,6 @@ TREND_ATTRIBUTES = [
     {"name": "snr",                "function": "max"},
     {"name": "txRate",             "function": "max"},
     {"name": "rxRate",             "function": "max"},
-    {"name": "dataRate",           "function": "max"},
     {"name": "maxRunDuration",     "function": "max"},
     {"name": "maxRoamingDuration", "function": "max"},
 ]
@@ -312,7 +311,6 @@ def extract_interval_rows(mac: str, trend_items: list) -> list:
         raw_roam  = _pick("maxroamingduration")
         raw_tx    = _pick("txrate")
         raw_rx    = _pick("rxrate")
-        raw_dr    = _pick("datarate")
 
         row["rssi"]                  = float(raw_rssi) if raw_rssi is not None else None
         row["snr"]                   = float(raw_snr)  if raw_snr  is not None else None
@@ -320,7 +318,6 @@ def extract_interval_rows(mac: str, trend_items: list) -> list:
         row["roaming_duration_s"]    = _ms_to_s(raw_roam)
         row["tx_rate_kbps"]          = _bps_to_kbps(raw_tx)
         row["rx_rate_kbps"]          = _bps_to_kbps(raw_rx)
-        row["data_rate"]             = _bits_to_kbps(float(raw_dr) if raw_dr is not None else None)
         interval_rows.append(row)
     return interval_rows
 
@@ -393,7 +390,6 @@ def extract_full_detail_metrics(details: dict) -> dict:
         "snr":                _safe_float(details.get("snr")),
         "tx_rate_kbps":       _bps_to_kbps(_safe_float(details.get("txRate"))),
         "rx_rate_kbps":       _bps_to_kbps(_safe_float(details.get("rxRate"))),
-        "data_rate":          _bits_to_kbps(_safe_float(details.get("dataRate"))),
         "health_score":       health_score,
         "connected_mac":      connected_mac,
         "connected_name":     connected_name,
@@ -425,7 +421,6 @@ def build_event_rows(api_base: str, token: str, mac: str, events: list) -> list:
             "snr":                   m["snr"],
             "tx_rate_kbps":          m["tx_rate_kbps"],
             "rx_rate_kbps":          m["rx_rate_kbps"],
-            "data_rate":             m["data_rate"],
             "health_score":          m["health_score"],
             "connected_mac":         m["connected_mac"],
             "connected_name":        m["connected_name"],
@@ -625,7 +620,6 @@ def write_output_excel(summary_rows: list, interval_rows: list,
         "Roaming Duration (avg max, s)",
         "Tx Rate (avg max, kBps)",
         "Rx Rate (avg max, kBps)",
-        "Data Rate (avg max, kbps)",
         "Health Score",
         "Connected Device MAC",
         "Connected Device Name",
@@ -639,7 +633,6 @@ def write_output_excel(summary_rows: list, interval_rows: list,
             row["roaming_time"],
             row["tx_rate"],
             row["rx_rate"],
-            row["data_rate"],
             row["health_score"],
             row["connected_mac"],
             row["connected_name"],
@@ -656,7 +649,6 @@ def write_output_excel(summary_rows: list, interval_rows: list,
         "Roaming Duration (s)",
         "Rx Rate (kBps)",
         "Tx Rate (kBps)",
-        "Data Rate (kbps)",
     ])
     for row in interval_rows:
         ws_raw.append([
@@ -668,7 +660,6 @@ def write_output_excel(summary_rows: list, interval_rows: list,
             row["roaming_duration_s"],
             row["rx_rate_kbps"],
             row["tx_rate_kbps"],
-            row["data_rate"],
         ])
 
     # --- Sheet 3: events ---
@@ -681,7 +672,6 @@ def write_output_excel(summary_rows: list, interval_rows: list,
         "SNR (dB)",
         "Tx Rate (kBps)",
         "Rx Rate (kBps)",
-        "Data Rate (kbps)",
         "Health Score",
         "Connected Device MAC",
         "Connected Device Name",
@@ -697,7 +687,6 @@ def write_output_excel(summary_rows: list, interval_rows: list,
             row["snr"],
             row["tx_rate_kbps"],
             row["rx_rate_kbps"],
-            row["data_rate"],
             row["health_score"],
             row["connected_mac"],
             row["connected_name"],
@@ -795,7 +784,6 @@ def main():
         raw_roam_avg = average_of_maxes(trend_items, "maxRoamingDuration")
         raw_tx_avg   = average_of_maxes(trend_items, "txRate")
         raw_rx_avg   = average_of_maxes(trend_items, "rxRate")
-        raw_dr_avg   = average_of_maxes(trend_items, "dataRate")
 
         summary_rows.append({
             "mac":             mac,
@@ -805,7 +793,6 @@ def main():
             "roaming_time":    _ms_to_s(raw_roam_avg),
             "tx_rate":         _bps_to_kbps(raw_tx_avg),
             "rx_rate":         _bps_to_kbps(raw_rx_avg),
-            "data_rate":       _bits_to_kbps(raw_dr_avg),
             "health_score":    health_score,
             "connected_mac":   connected_mac,
             "connected_name":  connected_name,

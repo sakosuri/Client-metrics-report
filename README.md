@@ -107,7 +107,7 @@ Columns include:
 
 - RSSI and SNR
 - Onboarding and roaming duration in seconds
-- Tx and Rx rate in kBps, and data rate in kbps
+- Tx and Rx rate in kBps
 - Health score
 - Connected device MAC and name
 
@@ -139,7 +139,7 @@ The script calls these endpoints:
 - `GET /dna/intent/api/v1/client-detail` for point-in-time client details
 - `GET /dna/data/api/v1/assuranceEvents` for client assurance events
 
-Trend analytics requests use a five-minute interval and request maximum aggregates for RSSI, SNR, Tx/Rx rate, data rate, onboarding duration, and roaming duration. Trend results are paginated using the response cursor.
+Trend analytics requests use a five-minute interval and request maximum aggregates for RSSI, SNR, Tx/Rx rate, onboarding duration, and roaming duration. Trend results are paginated using the response cursor.
 
 ## Unit conversions
 
@@ -147,7 +147,6 @@ The report applies these conversions:
 
 - Durations: milliseconds to seconds
 - Tx/Rx rates: bytes per second to kilobytes per second (kBps) by dividing by `1000`
-- Data rate: bits per second to kilobits per second (kbps) by dividing by `1000`
 
 Values that are missing or cannot be converted are left blank in the workbook.
 
