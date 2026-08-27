@@ -5,7 +5,7 @@ A Python command-line tool that retrieves per-client wireless metrics from Cisco
 The report combines:
 
 - Five-minute trend analytics for RSSI, SNR, rates, onboarding duration, and roaming duration
-- Point-in-time client details for health score and connected access point information
+- current client details for health score and connected access point information
 - Assurance events with client details sampled at each event timestamp
 - Bar charts summarizing onboarding, roaming, RSSI, and SNR distributions
 
@@ -54,6 +54,11 @@ Example:
 | --- |
 | `aa:bb:cc:dd:ee:ff` |
 | `11:22:33:44:55:66` |
+| `AA:BB:CC:DD:EE:FF` |
+| `AA-BB-CC-DD-EE-FF` |
+| `Aa-Bb-Cc-Dd-Ee-fF` |
+
+The MAC Address will be converted to this format automatically: all upper case letters in decimal format
 
 The following first-column headers are ignored automatically:
 
@@ -85,6 +90,8 @@ If `--time-range` is omitted, the script prompts for either the last 24 hours or
 python3 client_metrics_report.py --input clients.xlsx
 ```
 
+If `--input` is omitted, the script will take the input file that is added as default one in it
+
 ### Command-line options
 
 | Option | Default | Description |
@@ -101,7 +108,7 @@ The generated workbook contains four sheets:
 
 ### Client Metrics Summary
 
-One row per input client. Trend metrics are the average of all available five-minute maximum samples in the selected window.
+One row per input client. Trend metrics (RSSI, SNR, rates, durations) are the average of all available five-minute maximum samples in the selected window. Health score and connected device information are fetched from `GET /dna/data/api/v1/clients/{mac}` at report-generation time.
 
 Columns include:
 
@@ -117,7 +124,7 @@ Raw five-minute trend samples after unit conversion. This sheet includes the tim
 
 ### Client Events
 
-Assurance events returned for each client during the selected window. For each event, the script requests client details at the event timestamp and records event-specific metrics where available.
+Assurance events returned for each client during the selected window. For each event the script calls `GET /dna/intent/api/v1/client-detail` with the event's timestamp, so RSSI, SNR, rates, health score, and connected device reflect the client state at the exact moment the event occurred. Onboarding and roaming duration columns are populated only for matching event types.
 
 ### Charts
 
@@ -134,12 +141,15 @@ The charts include threshold shading and a percentage summary based on the clien
 
 The script calls these endpoints:
 
-- `POST /dna/system/api/v1/auth/token` for authentication
-- `POST /dna/data/api/v1/clients/{mac}/trendAnalytics` for five-minute client trend data
-- `GET /dna/intent/api/v1/client-detail` for point-in-time client details
-- `GET /dna/data/api/v1/assuranceEvents` for client assurance events
+- `POST /dna/system/api/v1/auth/token` — authentication
+- `POST /dna/data/api/v1/clients/{mac}/trendAnalytics` — five-minute trend data (summary and interval sheets)
+- `GET  /dna/data/api/v1/clients/{mac}` — current health score and connected device (summary sheet)
+- `GET  /dna/data/api/v1/assuranceEvents` — client assurance events (events sheet)
+- `GET  /dna/intent/api/v1/client-detail?macAddress=...&timestamp=...` — client metrics at a specific point in time (events sheet)
 
 Trend analytics requests use a five-minute interval and request maximum aggregates for RSSI, SNR, Tx/Rx rate, onboarding duration, and roaming duration. Trend results are paginated using the response cursor.
+
+For the events sheet, the `client-detail` API is called with the event's own timestamp so that RSSI, SNR, rates, health score, and connected device reflect the client's state at the exact moment the event occurred.
 
 ## Unit conversions
 
