@@ -3,15 +3,22 @@
 Fetch per-client metrics from Cisco Catalyst Center and export averaged results to Excel.
 
 APIs used:
-  POST /dna/data/api/v1/clients/{id}/trendAnalytics  -> RSSI, SNR, Onboarding/Roaming times, Tx/Rx rates
-  GET  /dna/data/api/v1/clients/{id}                 -> Health score, connected device MAC/name
+  POST /dna/data/api/v1/clients/{id}/trendAnalytics    -> RSSI, SNR, Onboarding/Roaming times, Tx/Rx rates (summary + interval sheets)
+  GET  /dna/data/api/v1/clients/{id}                   -> Health score, connected device MAC/name (summary sheet)
+  GET  /dna/data/api/v1/assuranceEvents                -> Onboarding/Roaming events (events sheet)
+  GET  /dna/intent/api/v1/client-detail?macAddress=... -> Client metrics at event timestamp (events sheet)
+       &timestamp=...
 
 Input:  Excel file with client MAC addresses in the first column (header row optional).
-Output: Excel with one row per client, columns:
-        MAC Address | RSSI | SNR | Onboarding Time | Roaming Time |
-        Tx Rate | Rx Rate | Health Score | Connected Device MAC | Connected Device Name
+Output: Excel with four sheets:
+  - Client Metrics Summary : one row per client — MAC | RSSI | SNR | Onboarding Time | Roaming Time |
+                             Tx Rate | Rx Rate | Health Score | Connected Device MAC | Connected Device Name
+  - 5-Min Interval Data    : raw 5-minute trend samples per client
+  - Client Events          : one row per event with metrics captured at the event timestamp
+  - Charts                 : bar charts for onboarding/roaming times and RSSI/SNR distribution
 
-Each metric is the average of all 5-minute max values across the selected time window.
+Summary RSSI, SNR, and rate metrics are the average of 5-minute max values across the selected time window.
+Event-row metrics are point-in-time values fetched at the exact moment each event occurred.
 
 Environment variables (.env in this folder):
   CATC_API_BASE   e.g. https://<catc--ip>
@@ -128,9 +135,10 @@ def read_mac_addresses(excel_path: str) -> list[str]:
     macs = []
     for row in ws.iter_rows(min_row=1, values_only=True):
         val = row[0] if row else None
+        print(val)
         if not val:
             continue
-        mac = str(val).strip()
+        mac = str(val).strip().replace("-", ":").upper()
         if mac.lower() in _MAC_COLUMN_HEADERS:
             continue
         macs.append(mac)
@@ -142,10 +150,12 @@ def read_mac_addresses(excel_path: str) -> list[str]:
 # API calls
 # ---------------------------------------------------------------------------
 
-def _post_with_pagination(endpoint: str, headers: dict, base_body: dict) -> list:
+def _post_with_pagination(endpoint: str, headers: dict, base_body: dict) -> tuple:
     all_items = []
     cursor = None
     seen_cursors: set[str] = set()
+    error_code = None
+    error_detail = None
 
     while True:
         body = {**base_body, "page": {"limit": DEFAULT_PAGE_LIMIT, "timeSortOrder": "asc"}}
@@ -156,13 +166,15 @@ def _post_with_pagination(endpoint: str, headers: dict, base_body: dict) -> list
                              timeout=REQUEST_TIMEOUT, verify=False)
 
         if resp.status_code == 404:
+            error_code = 404
+            error_detail = "Not found"
             break
         if resp.status_code >= 400:
+            error_code = resp.status_code
             try:
-                detail = resp.json()
+                error_detail = resp.json()
             except Exception:
-                detail = resp.text
-            print(f"    API warning [{resp.status_code}]: {detail}")
+                error_detail = resp.text
             break
 
         payload = resp.json()
@@ -174,7 +186,7 @@ def _post_with_pagination(endpoint: str, headers: dict, base_body: dict) -> list
         seen_cursors.add(next_cursor)
         cursor = next_cursor
 
-    return all_items
+    return all_items, error_code is None, error_code, error_detail
 
 
 def fetch_client_trend(api_base: str, token: str, mac: str,
@@ -190,25 +202,43 @@ def fetch_client_trend(api_base: str, token: str, mac: str,
     return _post_with_pagination(endpoint, headers, body)
 
 
-def fetch_client_details(api_base: str, token: str, mac: str, at_time_ms: int) -> dict:
+def fetch_client_details(api_base: str, token: str, mac: str) -> tuple:
     """Fetch point-in-time client info for health score and connected device."""
-    endpoint = f"{api_base}/dna/intent/api/v1/client-detail"
+    endpoint = f"{api_base}/dna/data/api/v1/clients/{mac}"
     headers  = {"X-Auth-Token": token, "Content-Type": "application/json"}
-    params   = {"macAddress": mac, "timestamp": at_time_ms}
 
-    resp = requests.get(endpoint, headers=headers, params=params,
+    resp = requests.get(endpoint, headers=headers,
                         timeout=REQUEST_TIMEOUT, verify=False)
     if resp.status_code == 404:
-        return {}
+        return {}, False, 404, "Not found"
     if resp.status_code >= 400:
         try:
             err = resp.json()
         except Exception:
             err = resp.text
-        print(f"    Details API warning [{resp.status_code}]: {err}")
-        return {}
+        return {}, False, resp.status_code, err
 
-    return resp.json().get("detail", {}) or {}
+    return resp.json().get("response", {}) or {}, True, resp.status_code, None
+
+
+def fetch_client_detail_at_time(api_base: str, token: str, mac: str, timestamp_ms: int) -> tuple:
+    """Fetch client state at a specific time via the legacy client-detail API."""
+    endpoint = f"{api_base}/dna/intent/api/v1/client-detail"
+    headers  = {"X-Auth-Token": token, "Content-Type": "application/json"}
+    params   = {"macAddress": mac, "timestamp": timestamp_ms}
+
+    resp = requests.get(endpoint, headers=headers, params=params,
+                        timeout=REQUEST_TIMEOUT, verify=False)
+    if resp.status_code == 404:
+        return {}, False, 404, "Not found"
+    if resp.status_code >= 400:
+        try:
+            err = resp.json()
+        except Exception:
+            err = resp.text
+        return {}, False, resp.status_code, err
+
+    return resp.json().get("detail", {}) or {}, True, resp.status_code, None
 
 
 # ---------------------------------------------------------------------------
@@ -323,12 +353,14 @@ def extract_interval_rows(mac: str, trend_items: list) -> list:
 
 
 def fetch_assurance_events(api_base: str, token: str, mac: str,
-                           start_ms: int, end_ms: int) -> list:
+                           start_ms: int, end_ms: int) -> tuple:
     endpoint = f"{api_base}/dna/data/api/v1/assuranceEvents"
     headers  = {"X-Auth-Token": token, "Content-Type": "application/json"}
     all_events = []
     offset = 1
     limit  = 20
+    error_code = None
+    error_detail = None
 
     while True:
         params = {
@@ -342,13 +374,15 @@ def fetch_assurance_events(api_base: str, token: str, mac: str,
         resp = requests.get(endpoint, headers=headers, params=params,
                             timeout=REQUEST_TIMEOUT, verify=False)
         if resp.status_code == 404:
+            error_code = 404
+            error_detail = "Not found"
             break
         if resp.status_code >= 400:
+            error_code = resp.status_code
             try:
-                err = resp.json()
+                error_detail = resp.json()
             except Exception:
-                err = resp.text
-            print(f"    Events API warning [{resp.status_code}]: {err}")
+                error_detail = resp.text
             break
 
         payload = resp.json()
@@ -358,49 +392,48 @@ def fetch_assurance_events(api_base: str, token: str, mac: str,
             break
         offset += limit
 
-    return all_events
+    return all_events, error_code is None, error_code, error_detail
 
 
-def extract_full_detail_metrics(details: dict) -> dict:
-    """Extract all point-in-time metrics from a client-detail response."""
-    health_score = None
-    for entry in details.get("healthScore") or []:
-        if isinstance(entry, dict) and entry.get("healthType", "").upper() == "OVERALL":
-            health_score = entry.get("score")
-            break
-    else:
-        hl = details.get("healthScore") or []
-        if hl and isinstance(hl[0], dict):
-            health_score = hl[0].get("score")
-
-    connected_devices = details.get("connectedDevice") or []
-    connected_mac  = connected_devices[0].get("mac",  "") if connected_devices else ""
-    connected_name = connected_devices[0].get("name", "") if connected_devices else ""
-
+def extract_legacy_detail_metrics(detail: dict) -> dict:
+    """Extract metrics from /dna/intent/api/v1/client-detail response."""
     def _safe_float(v):
         try:
             return float(v) if v is not None else None
         except (TypeError, ValueError):
             return None
 
-    onboarding = details.get("onboarding") or {}
+    # healthScore is a list; prefer OVERALL, fall back to first entry
+    health_score = None
+    for entry in detail.get("healthScore") or []:
+        if isinstance(entry, dict) and entry.get("healthType", "").upper() == "OVERALL":
+            health_score = entry.get("score")
+            break
+    else:
+        hl = detail.get("healthScore") or []
+        if hl and isinstance(hl[0], dict):
+            health_score = hl[0].get("score")
+
+    connected_devices = detail.get("connectedDevice") or []
+    connected_mac  = connected_devices[0].get("mac",  "") if connected_devices else ""
+    connected_name = connected_devices[0].get("name", "") if connected_devices else ""
+    onboarding = detail.get("onboarding") or {}
 
     return {
-        "rssi":               _safe_float(details.get("rssi")),
-        "snr":                _safe_float(details.get("snr")),
-        "tx_rate_kbps":       _bps_to_kbps(_safe_float(details.get("txRate"))),
-        "rx_rate_kbps":       _bps_to_kbps(_safe_float(details.get("rxRate"))),
+        "rssi":               _safe_float(detail.get("rssi")),
+        "snr":                _safe_float(detail.get("snr")),
+        "tx_rate_kbps":       _bps_to_kbps(_safe_float(detail.get("txRate"))),
+        "rx_rate_kbps":       _bps_to_kbps(_safe_float(detail.get("rxRate"))),
         "health_score":       health_score,
         "connected_mac":      connected_mac,
         "connected_name":     connected_name,
-        # ms -> s for durations sourced from onboarding sub-object
         "onboarding_duration_s": _ms_to_s(_safe_float(onboarding.get("maxRunDuration"))),
-        "roaming_duration_s":    _ms_to_s(_safe_float(details.get("maxRoamingDuration"))),
+        "roaming_duration_s":    _ms_to_s(_safe_float(onboarding.get("maxRoamingDuration"))),
     }
 
 
 def build_event_rows(api_base: str, token: str, mac: str, events: list) -> list:
-    """For each event, fetch client-detail at event time and assemble a report row."""
+    """For each event, fetch client state at the event timestamp via the legacy API."""
     rows = []
     for event in events:
         ts_ms      = event.get("timestamp") or event.get("eventTimestamp")
@@ -410,8 +443,8 @@ def build_event_rows(api_base: str, token: str, mac: str, events: list) -> list:
         is_onboarding = any(k in event_lower for k in ("onboard", "assoc", "auth", "dhcp"))
         is_roaming    = "roam" in event_lower
 
-        details = fetch_client_details(api_base, token, mac, ts_ms) if ts_ms else {}
-        m = extract_full_detail_metrics(details)
+        detail, _, _, _ = fetch_client_detail_at_time(api_base, token, mac, ts_ms or 0)
+        m = extract_legacy_detail_metrics(detail)
 
         rows.append({
             "mac":                   mac,
@@ -432,24 +465,10 @@ def build_event_rows(api_base: str, token: str, mac: str, events: list) -> list:
 
 def extract_client_info(details: dict):
     """Pull health score and connected device info from the client details response."""
-    health_score = None
-    health_list = details.get("healthScore") or []
-    # Prefer OVERALL score; fall back to the first entry
-    for entry in health_list:
-        if isinstance(entry, dict) and entry.get("healthType", "").upper() == "OVERALL":
-            health_score = entry.get("score")
-            break
-    else:
-        if health_list and isinstance(health_list[0], dict):
-            health_score = health_list[0].get("score")
-
-    connected_mac  = ""
-    connected_name = ""
-    connected_devices = details.get("connectedDevice") or []
-    if connected_devices and isinstance(connected_devices[0], dict):
-        connected_mac  = connected_devices[0].get("mac",  "")
-        connected_name = connected_devices[0].get("name", "")
-
+    health_score = (details.get("health") or {}).get("overallScore")
+    device = details.get("connectedNetworkDevice") or {}
+    connected_mac  = device.get("connectedNetworkDeviceMac",  "")
+    connected_name = device.get("connectedNetworkDeviceName", "")
     return health_score, connected_mac, connected_name
 
 
@@ -762,7 +781,7 @@ def main():
     print("  Token obtained.")
 
     start_ms, end_ms = get_time_range(time_range)
-    print(f"Time range: {time_range}  [{start_ms} -> {end_ms}]")
+    print(f"Time range: {time_range}  [{_to_ist(start_ms)} ({start_ms} ms) -> {_to_ist(end_ms)} ({end_ms} ms)]")
 
     mac_list = read_mac_addresses(args.input)
     print(f"Clients to process: {len(mac_list)}")
@@ -773,12 +792,23 @@ def main():
     for idx, mac in enumerate(mac_list, 1):
         print(f"\n[{idx}/{len(mac_list)}] {mac}")
 
-        trend_items = fetch_client_trend(api_base, token, mac, start_ms, end_ms)
-        print(f"  Trend data points: {len(trend_items)}")
+        trend_items, trend_ok, trend_code, trend_err = fetch_client_trend(api_base, token, mac, start_ms, end_ms)
+        if trend_ok:
+            print(f"  Successfully retrieved Trend")
+            print(f"  Trend data points: {len(trend_items)}")
+        else:
+            print(f"  Failed to retrieve Trend [HTTP {trend_code}]: {trend_err}")
+        print(f"  {'_' *100}")
 
         # Point-in-time details use current time (when report is executed)
-        details = fetch_client_details(api_base, token, mac, end_ms)
+        details, details_ok, details_code, details_err = fetch_client_details(api_base, token, mac)
         health_score, connected_mac, connected_name = extract_client_info(details)
+        if details_ok:
+            print(f"  Successfully retrieved client health score and its connected device details:")
+            print(f"    Health score: {health_score}")
+            print(f"    Connected device: {connected_name or '(unknown)'} ({connected_mac or '(unknown)'})")
+        else:
+            print(f"  Failed to retrieve client details [HTTP {details_code}]: {details_err}")
 
         raw_onb_avg  = average_of_maxes(trend_items, "maxRunDuration")
         raw_roam_avg = average_of_maxes(trend_items, "maxRoamingDuration")
@@ -799,8 +829,13 @@ def main():
         })
         interval_rows.extend(extract_interval_rows(mac, trend_items))
 
-        events = fetch_assurance_events(api_base, token, mac, start_ms, end_ms)
-        print(f"  Events fetched: {len(events)}")
+        events, events_ok, events_code, events_err = fetch_assurance_events(api_base, token, mac, start_ms, end_ms)
+        print(f"  {'-' * 100}")
+        if events_ok:
+            print(f"  Successfully retrieved client events")
+            print(f"  Events fetched: {len(events)}")
+        else:
+            print(f"  Failed to retrieve client events [HTTP {events_code}]: {events_err}")
         event_rows.extend(build_event_rows(api_base, token, mac, events))
 
     write_output_excel(summary_rows, interval_rows, event_rows, args.output)
