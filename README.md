@@ -5,7 +5,7 @@ A Python command-line tool that retrieves per-client wireless metrics from Cisco
 The report combines:
 
 - Five-minute trend analytics for RSSI, SNR, rates, onboarding duration, and roaming duration
-- current client details for health score and connected access point information
+- Point-in-time client details for health score and connected access point information
 - Assurance events with client details sampled at each event timestamp
 - Bar charts summarizing onboarding, roaming, RSSI, and SNR distributions
 
@@ -54,11 +54,6 @@ Example:
 | --- |
 | `aa:bb:cc:dd:ee:ff` |
 | `11:22:33:44:55:66` |
-| `AA:BB:CC:DD:EE:FF` |
-| `AA-BB-CC-DD-EE-FF` |
-| `Aa-Bb-Cc-Dd-Ee-fF` |
-
-The MAC Address will be converted to this format automatically: all upper case letters in decimal format
 
 The following first-column headers are ignored automatically:
 
@@ -90,8 +85,6 @@ If `--time-range` is omitted, the script prompts for either the last 24 hours or
 python3 client_metrics_report.py --input clients.xlsx
 ```
 
-If `--input` is omitted, the script will take the input file that is added as default one in it
-
 ### Command-line options
 
 | Option | Default | Description |
@@ -101,6 +94,66 @@ If `--input` is omitted, the script will take the input file that is added as de
 | `--output` | `client_metrics_report_DD_MM_YY.xlsx` | Destination report filename |
 
 The selected time window ends at the time the report starts. Timestamps in the generated workbook are displayed in IST (`UTC+05:30`).
+
+## Linux cron job
+
+On Linux, you can schedule the report to run automatically with cron.
+
+1. Make the wrapper script executable:
+
+```bash
+chmod +x run_client_metrics.sh
+```
+
+2. Open the cron table for the current user:
+
+```bash
+crontab -e
+```
+
+3. Add a line to run the script automatically. For example, this runs the report every day at 02:00:
+
+```cron
+0 2 * * * <path where the shell script is present>run_client_metrics.sh >> <path where the logs to be added after script execution>/logs/cron.log 2>&1
+```
+Example of path: /Users/admin/scripts/Client metrics report
+This uses the included `run_client_metrics.sh` wrapper, which logs execution to the `logs` folder and runs the Python script with the configured interpreter.
+
+You can adjust the schedule to match your reporting needs. For example:
+
+- `0 2 * * *` = every day at 2:00 AM
+- `0 */6 * * *` = every 6 hours
+- `30 9 * * 1-5` = Monday through Friday at 9:30 AM
+
+## Windows execution
+
+On Windows, you can schedule the same script with Task Scheduler.
+
+### Schedule with Task Scheduler
+
+1. Open Task Scheduler.
+2. Choose Create Task.
+3. Set the program/script to your Python executable, for example:
+
+```powershell
+C:\Python311\python.exe
+```
+
+4. In Add arguments, provide:
+
+```powershell
+client_metrics_report.py --time-range 24h 
+```
+The above scheduling will generate the report for the last 24 hr time range.
+5. Set the Start in field to the folder containing the script, such as:
+
+```powershell
+C:\scripts\Client metrics report
+```
+
+6. Configure the trigger time and save the task.
+
+This allows the same report to run automatically on a Windows machine without manual intervention.
 
 ## Output workbook
 
@@ -149,7 +202,7 @@ The script calls these endpoints:
 
 Trend analytics requests use a five-minute interval and request maximum aggregates for RSSI, SNR, Tx/Rx rate, onboarding duration, and roaming duration. Trend results are paginated using the response cursor.
 
-For the events sheet, the `client-detail` API is called with the event's own timestamp so that RSSI, SNR, rates, health score, and connected device reflect the client's state at the exact moment the event occurred.
+For the events sheet, the legacy `client-detail` API is called with the event's own timestamp so that RSSI, SNR, rates, health score, and connected device reflect the client's state at the exact moment the event occurred.
 
 ## Unit conversions
 
